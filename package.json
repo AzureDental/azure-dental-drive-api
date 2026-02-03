@@ -5,6 +5,6 @@
   "type": "module",
   "dependencies": {
     "googleapis": "^133.0.0",
-    "multer": "^1.4.5-lts.1"
+    "multer": "1.4.5-lts.2"
   }
 }
