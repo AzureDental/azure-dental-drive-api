@@ -1,11 +1,13 @@
-export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'POST only' });
-  }
 import { google } from "googleapis";
 import multer from "multer";
 
 const upload = multer({ storage: multer.memoryStorage() });
+
+export const config = {
+  api: {
+    bodyParser: false,
+  },
+};
 
 const auth = new google.auth.GoogleAuth({
   credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
@@ -14,13 +16,11 @@ const auth = new google.auth.GoogleAuth({
 
 const drive = google.drive({ version: "v3", auth });
 
-export const config = {
-  api: {
-    bodyParser: false,
-  },
-};
-
 export default function handler(req, res) {
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "POST only" });
+  }
+
   upload.any()(req, res, async (err) => {
     if (err) {
       return res.status(500).json({ error: err.message });
@@ -30,9 +30,9 @@ export default function handler(req, res) {
       return res.status(400).json({ error: "No files uploaded" });
     }
 
-    const uploadedFiles = [];
-
     try {
+      const uploadedFiles = [];
+
       for (const file of req.files) {
         const response = await drive.files.create({
           requestBody: {
@@ -60,4 +60,3 @@ export default function handler(req, res) {
     }
   });
 }
-Add Drive upload API
