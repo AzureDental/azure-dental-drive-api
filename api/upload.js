@@ -54,9 +54,9 @@ export default function handler(req, res) {
         });
       }
 
-      res.status(200).json({ files: uploadedFiles });
+      return res.status(200).json({ files: uploadedFiles });
     } catch (error) {
-      res.status(500).json({ error: error.message });
+      return res.status(500).json({ error: error.message });
     }
   });
 }
