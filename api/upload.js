@@ -1,31 +1,41 @@
 import { google } from "googleapis";
-import multer from "multer";
-import { Readable } from "stream";
+import { Readable } from "node:stream";
 
-export const config = {
-  api: { bodyParser: false },
+export const runtime = "nodejs";
+export const maxDuration = 30;
+
+// Basic CORS (handy if you’ll call this from a browser later)
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
 };
 
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    files: 10,
-    fileSize: 25 * 1024 * 1024, // 25MB per file (adjust if needed)
-  },
-});
+export function OPTIONS() {
+  return new Response(null, { status: 204, headers: corsHeaders });
+}
+
+function getEnvOrThrow(name) {
+  const v = process.env[name];
+  if (!v) throw new Error(`Missing env var: ${name}`);
+  return v;
+}
+
+function jsonResponse(status, body) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json", ...corsHeaders },
+  });
+}
 
 function getDriveClient() {
-  const json = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-  const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
-
-  if (!json) throw new Error("Missing env: GOOGLE_SERVICE_ACCOUNT_JSON");
-  if (!folderId) throw new Error("Missing env: GOOGLE_DRIVE_FOLDER_ID");
-
   let credentials;
   try {
-    credentials = JSON.parse(json);
-  } catch {
-    throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON");
+    credentials = JSON.parse(getEnvOrThrow("GOOGLE_SERVICE_ACCOUNT_JSON"));
+  } catch (e) {
+    throw new Error(
+      "Invalid GOOGLE_SERVICE_ACCOUNT_JSON (must be valid JSON string)"
+    );
   }
 
   const auth = new google.auth.GoogleAuth({
@@ -36,57 +46,53 @@ function getDriveClient() {
   return google.drive({ version: "v3", auth });
 }
 
-export default function handler(req, res) {
-  if (req.method !== "POST") {
-    res.setHeader("Allow", "POST");
-    return res.status(405).json({ error: "POST only" });
+export async function POST(request) {
+  try {
+    const drive = getDriveClient();
+    const folderId = getEnvOrThrow("GOOGLE_DRIVE_FOLDER_ID");
+
+    const form = await request.formData();
+
+    // Accept either: file=... OR files=... (covers most clients)
+    const files = [
+      ...form.getAll("file"),
+      ...form.getAll("files"),
+    ].filter((x) => x && typeof x === "object" && "arrayBuffer" in x);
+
+    if (!files.length) {
+      return jsonResponse(400, {
+        error: "No files uploaded (send form-data field name 'file')",
+      });
+    }
+
+    const uploaded = [];
+
+    for (const f of files) {
+      const arrayBuffer = await f.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+
+      const response = await drive.files.create({
+        requestBody: {
+          name: f.name || "upload",
+          parents: [folderId],
+        },
+        media: {
+          mimeType: f.type || "application/octet-stream",
+          body: Readable.from(buffer),
+        },
+        fields: "id, webViewLink",
+        supportsAllDrives: true,
+      });
+
+      uploaded.push({
+        fileId: response.data.id,
+        url: response.data.webViewLink,
+        name: f.name,
+      });
+    }
+
+    return jsonResponse(200, { files: uploaded });
+  } catch (err) {
+    return jsonResponse(500, { error: err?.message || "Server error" });
   }
-
-  upload.any()(req, res, async (err) => {
-    if (err) {
-      return res.status(400).json({ error: `Upload error: ${err.message}` });
-    }
-
-    const files = req.files;
-    if (!files || files.length === 0) {
-      return res.status(400).json({ error: "No files uploaded" });
-    }
-
-    let drive;
-    try {
-      drive = getDriveClient();
-    } catch (e) {
-      return res.status(500).json({ error: e.message });
-    }
-
-    try {
-      const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
-      const uploadedFiles = [];
-
-      for (const file of files) {
-        const response = await drive.files.create({
-          requestBody: {
-            name: file.originalname,
-            parents: [folderId],
-          },
-          media: {
-            mimeType: file.mimetype,
-            body: Readable.from(file.buffer), // IMPORTANT: stream, not raw Buffer
-          },
-          fields: "id, webViewLink, name",
-          supportsAllDrives: true,
-        });
-
-        uploadedFiles.push({
-          fileId: response.data.id,
-          url: response.data.webViewLink,
-          name: response.data.name || file.originalname,
-        });
-      }
-
-      return res.status(200).json({ files: uploadedFiles });
-    } catch (e) {
-      return res.status(500).json({ error: e.message || "Drive upload failed" });
-    }
-  });
 }
